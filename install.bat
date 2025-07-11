@@ -4,7 +4,7 @@ setlocal
 :: ============================================================================
 :: AffinityManager Service Installer & Compiler
 :: ============================================================================
-:: This script compiles the C++ source, then installs or uninstalls the service.
+:: This script provides options to compile the C++ source, install or uninstall the service.
 :: It must be run with administrative privileges.
 :: ============================================================================
 
@@ -36,91 +36,100 @@ echo.
 echo   AffinityManager Service Installer
 echo   =================================
 echo.
-echo   1. Compile and Install Service
-echo   2. Uninstall Service
-echo   3. Exit
+echo   1. Compile the program
+echo   2. Install the service
+echo   3. Uninstall the service
+echo   4. Exit
 echo.
-set /p "choice=Enter your choice (1, 2, or 3) and press Enter: "
+set /p "choice=Enter your choice (1, 2, 3, or 4) and press Enter: "
 
-if "%choice%"=="1" goto install_service
-if "%choice%"=="2" goto uninstall_service
-if "%choice%"=="3" goto :eof
+if "%choice%"=="1" goto compile
+if "%choice%"=="2" goto install_service
+if "%choice%"=="3" goto uninstall_service
+if "%choice%"=="4" goto :eof
 
 echo.
 echo Invalid choice. Please try again.
 pause
 goto menu
 
+:compile
+echo.
+echo --- Compiling %SOURCEFILE% ---
+g++ -o %EXECUTABLE% %SOURCEFILE% -municode -static -lstdc++ -lole32 -loleaut32 -lwbemuuid -lpowrprof
+if not exist "%EXECUTABLE%" (
+    echo ERROR: Compilation failed. Please check for errors above.
+) else (
+    echo Compilation successful.
+)
+pause
+goto menu
 
 :install_service
-    echo.
-    echo --- Starting Installation ---
+echo.
+echo --- Starting Installation ---
 
-    :: 1. Compile the source code
-    echo.
-    echo [1/4] Compiling %SOURCEFILE%...
-    g++ -o %EXECUTABLE% %SOURCEFILE% -municode -static -lstdc++ -lole32 -loleaut32 -lwbemuuid -lpowrprof
-    if not exist "%EXECUTABLE%" (
-        echo ERROR: Compilation failed. Please check for errors above.
-        pause
-        goto :eof
-    )
-    echo Compilation successful.
-
-    :: 2. Handle existing service installation
-    echo.
-    echo [2/4] Checking for existing service...
-    sc query %SERVICENAME% >nul 2>&1
-    if %errorlevel% == 0 (
-        echo Service is already installed. Stopping and removing it for re-installation...
-        net stop %SERVICENAME% >nul 2>&1
-        sc delete %SERVICENAME% >nul 2>&1
-        timeout /t 2 /nobreak >nul
-    )
-
-    :: 3. Prepare target directory and files
-    echo.
-    echo [3/4] Preparing installation directory and files...
-    if not exist "%TARGETDIR%" mkdir "%TARGETDIR%"
-    copy /Y "%EXECUTABLE%" "%TARGETDIR%\" >nul
-    if not exist "%TARGETDIR%\games.txt" ( if exist "games.txt" ( copy "games.txt" "%TARGETDIR%\games.txt" >nul ) else ( echo.>"%TARGETDIR%\games.txt" ) )
-    if not exist "%TARGETDIR%\background.txt" ( if exist "background.txt" ( copy "background.txt" "%TARGETDIR%\background.txt" >nul ) else ( echo.>"%TARGETDIR%\background.txt" ) )
-
-    :: 4. Create and start the new service
-    echo.
-    echo [4/4] Creating and starting the service...
-    sc create %SERVICENAME% binPath=%BINARYPATH% start=auto DisplayName="%DISPLAYNAME%"
-    if %errorlevel% neq 0 (
-        echo ERROR: Service creation failed.
-        pause
-        goto :eof
-    )
-    
-    sc description %SERVICENAME% "Manages process CPU affinities and performance state based on predefined lists."
-    
-    echo Starting service...
-    net start %SERVICENAME%
-    
-    echo.
-    echo --- Installation Complete ---
+:: Check if executable exists
+if not exist "%EXECUTABLE%" (
+    echo ERROR: The executable %EXECUTABLE% does not exist. Please compile the program first.
     pause
-    goto :eof
+    goto menu
+)
 
-:uninstall_service
-    echo.
-    echo Uninstalling %SERVICENAME%...
-    
-    echo Stopping and deleting service...
+:: 1. Handle existing service installation
+echo.
+echo [1/3] Checking for existing service...
+sc query %SERVICENAME% >nul 2>&1
+if %errorlevel% == 0 (
+    echo Service is already installed. Stopping and removing it for re-installation...
     net stop %SERVICENAME% >nul 2>&1
     sc delete %SERVICENAME% >nul 2>&1
-    
-    echo Cleaning up directory...
-    if exist "%TARGETDIR%" (
-        timeout /t 2 /nobreak >nul
-        rmdir /s /q "%TARGETDIR%"
-    )
-    
-    echo.
-    echo Uninstallation complete.
+    timeout /t 2 /nobreak >nul
+)
+
+:: 2. Prepare target directory and files
+echo.
+echo [2/3] Preparing installation directory and files...
+if not exist "%TARGETDIR%" mkdir "%TARGETDIR%"
+copy /Y "%EXECUTABLE%" "%TARGETDIR%\" >nul
+if not exist "%TARGETDIR%\games.txt" ( if exist "games.txt" ( copy "games.txt" "%TARGETDIR%\games.txt" >nul ) else ( echo.>"%TARGETDIR%\games.txt" ) )
+if not exist "%TARGETDIR%\background.txt" ( if exist "background.txt" ( copy "background.txt" "%TARGETDIR%\background.txt" >nul ) else ( echo.>"%TARGETDIR%\background.txt" ) )
+
+:: 3. Create and start the new service
+echo.
+echo [3/3] Creating and starting the service...
+sc create %SERVICENAME% binPath=%BINARYPATH% start=auto DisplayName="%DISPLAYNAME%"
+if %errorlevel% neq 0 (
+    echo ERROR: Service creation failed.
     pause
-    goto :eof
+    goto menu
+)
+
+sc description %SERVICENAME% "Manages process CPU affinities and performance state based on predefined lists."
+
+echo Starting service...
+net start %SERVICENAME%
+
+echo.
+echo --- Installation Complete ---
+pause
+goto menu
+
+:uninstall_service
+echo.
+echo Uninstalling %SERVICENAME%...
+
+echo Stopping and deleting service...
+net stop %SERVICENAME% >nul 2>&1
+sc delete %SERVICENAME% >nul 2>&1
+
+echo Cleaning up directory...
+if exist "%TARGETDIR%" (
+    timeout /t 2 /nobreak >nul
+    rmdir /s /q "%TARGETDIR%"
+)
+
+echo.
+echo Uninstallation complete.
+pause
+goto menu
