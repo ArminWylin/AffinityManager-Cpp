@@ -1,0 +1,26 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug AffinityManager",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/AffinityManager.exe",
+            "args": [], // We can add a "--debug" flag here later
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": true, // Shows the console window
+            "MIMode": "gdb",
+            "miDebuggerPath": "gdb.exe", // Assumes gdb.exe is in your PATH
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "preLaunchTask": "Build AffinityManager (g++)" // Runs the build task before debugging
+        }
+    ]
+}
