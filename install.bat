@@ -80,7 +80,7 @@ if not exist "%EXECUTABLE%" (
 echo.
 echo [1/3] Checking for existing service...
 sc query %SERVICENAME% >nul 2>&1
-if %errorlevel% == 0 (
+if %errorLevel% == 0 (
     echo Service is already installed. Stopping and removing it for re-installation...
     net stop %SERVICENAME% >nul 2>&1
     sc delete %SERVICENAME% >nul 2>&1
@@ -94,6 +94,7 @@ if not exist "%TARGETDIR%" mkdir "%TARGETDIR%"
 copy /Y "%EXECUTABLE%" "%TARGETDIR%\" >nul
 if not exist "%TARGETDIR%\games.txt" ( if exist "games.txt" ( copy "games.txt" "%TARGETDIR%\games.txt" >nul ) else ( echo.>"%TARGETDIR%\games.txt" ) )
 if not exist "%TARGETDIR%\background.txt" ( if exist "background.txt" ( copy "background.txt" "%TARGETDIR%\background.txt" >nul ) else ( echo.>"%TARGETDIR%\background.txt" ) )
+if not exist "%TARGETDIR%\all_cores_idle.txt" ( if exist "all_cores_idle.txt" ( copy "all_cores_idle.txt" "%TARGETDIR%\all_cores_idle.txt" >nul ) else ( echo.>"%TARGETDIR%\all_cores_idle.txt" ) )
 
 :: 3. Create and start the new service
 echo.

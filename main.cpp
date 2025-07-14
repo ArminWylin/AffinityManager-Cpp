@@ -33,6 +33,7 @@ std::wstring g_logFilePath;
 std::wstring g_configPath;
 std::set<std::wstring> g_gameList;
 std::set<std::wstring> g_backgroundList;
+std::set<std::wstring> g_allCoresIdleList; // New list for processes to get all cores when idle
 std::set<DWORD> g_managedGamePIDs;
 std::map<DWORD, DWORD_PTR> g_originalAffinities;
 std::mutex g_pidMutex;
@@ -40,6 +41,7 @@ std::mutex g_affinityMutex;
 
 DWORD_PTR g_pCoreMask = 0;
 DWORD_PTR g_eCoreMask = 0;
+DWORD_PTR g_allCoreMask = 0; // New mask for all cores
 int g_activeGameCount = 0;
 DWORD g_originalMaxFreqAC = 0;
 DWORD g_originalMaxFreqDC = 0;
@@ -50,9 +52,10 @@ void LogMessage(const std::wstring& message);
 void WINAPI ServiceMain(DWORD argc, LPWSTR *argv);
 void WINAPI ServiceCtrlHandler(DWORD CtrlCode);
 DWORD WINAPI ServiceWorkerThread(LPVOID lpParam);
-void ApplyAffinity(DWORD processId, std::wstring processName); // Changed to take by value
+void ApplyAffinity(DWORD processId, std::wstring processName, bool isGameActive);
 void SetMaxFrequency(DWORD freqMhz);
 void RevertAllChanges();
+void ReapplyAllAffinities(bool isGameActive);
 void DetectCoreMasks();
 void LoadProcessLists();
 void SetAffinityForExistingProcesses();
@@ -62,7 +65,6 @@ HRESULT InitializeWMI(IWbemServices** pSvc, IWbemLocator** pLoc);
 DWORD WINAPI AffinityWatcherThread(LPVOID lpParam);
 
 // --- Helper Function ---
-// Converts a wstring to lowercase
 void ToLower(std::wstring& str) {
     std::transform(str.begin(), str.end(), str.begin(),
                    [](wchar_t c){ return std::tolower(c); });
@@ -92,9 +94,7 @@ void LogEvent(const std::wstring& message, WORD eventType) {
 // --- Privilege & Core Management ---
 bool EnableDebugPrivilege() {
     HANDLE hToken;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
-        return false;
-    }
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) return false;
     LUID luid;
     if (!LookupPrivilegeValueW(NULL, SE_DEBUG_NAME, &luid)) {
         CloseHandle(hToken);
@@ -133,53 +133,65 @@ void DetectCoreMasks() {
         }
         i += current->Size;
     }
+    g_allCoreMask = g_pCoreMask | g_eCoreMask; // Calculate the "all cores" mask
     LogMessage(L"Detected P-Core Mask: " + std::to_wstring(g_pCoreMask));
     LogMessage(L"Detected E-Core Mask: " + std::to_wstring(g_eCoreMask));
+    LogMessage(L"Detected All-Core Mask: " + std::to_wstring(g_allCoreMask));
 }
 
 // --- Process List & Affinity ---
 void LoadProcessLists() {
     g_gameList.clear();
     g_backgroundList.clear();
+    g_allCoresIdleList.clear();
+
+    // Load games.txt
     std::wifstream gameFile((g_configPath + L"\\games.txt").c_str());
     std::wstring line;
     if (gameFile.is_open()) {
         while (std::getline(gameFile, line)) {
             if (!line.empty() && line.back() == L'\r') line.pop_back();
-            if (!line.empty()) {
-                ToLower(line); // Convert to lowercase
-                g_gameList.insert(line);
-            }
+            if (!line.empty()) { ToLower(line); g_gameList.insert(line); }
         }
         gameFile.close();
     }
     
+    // Load background.txt
     std::wifstream bgFile((g_configPath + L"\\background.txt").c_str());
     if (bgFile.is_open()) {
         while (std::getline(bgFile, line)) {
              if (!line.empty() && line.back() == L'\r') line.pop_back();
-             if (!line.empty()) {
-                ToLower(line); // Convert to lowercase
-                g_backgroundList.insert(line);
-             }
+             if (!line.empty()) { ToLower(line); g_backgroundList.insert(line); }
         }
         bgFile.close();
     }
-    LogMessage(L"Loaded " + std::to_wstring(g_gameList.size()) + L" games and " + std::to_wstring(g_backgroundList.size()) + L" background processes.");
+
+    // Load all_cores_idle.txt
+    std::wifstream aciFile((g_configPath + L"\\all_cores_idle.txt").c_str());
+    if (aciFile.is_open()) {
+        while (std::getline(aciFile, line)) {
+             if (!line.empty() && line.back() == L'\r') line.pop_back();
+             if (!line.empty()) { ToLower(line); g_allCoresIdleList.insert(line); }
+        }
+        aciFile.close();
+    }
+    LogMessage(L"Loaded " + std::to_wstring(g_gameList.size()) + L" games, " + std::to_wstring(g_backgroundList.size()) + L" background, and " + std::to_wstring(g_allCoresIdleList.size()) + L" all-cores processes.");
 }
 
-void ApplyAffinity(DWORD processId, std::wstring processName) { // Take by value to modify
+void ApplyAffinity(DWORD processId, std::wstring processName, bool isGameActive) {
     HANDLE hProcess = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
     if (!hProcess) return;
 
     std::wstring originalName = processName;
-    ToLower(processName); // Convert process name to lowercase for comparison
+    ToLower(processName);
 
     DWORD_PTR targetMask = 0;
     if (g_gameList.count(processName)) {
         targetMask = g_pCoreMask;
     } else if (g_backgroundList.count(processName)) {
         targetMask = g_eCoreMask;
+    } else if (g_allCoresIdleList.count(processName)) {
+        targetMask = isGameActive ? g_eCoreMask : g_allCoreMask;
     }
 
     if (targetMask != 0) {
@@ -188,7 +200,6 @@ void ApplyAffinity(DWORD processId, std::wstring processName) { // Take by value
             std::lock_guard<std::mutex> lock(g_affinityMutex);
             if (g_originalAffinities.find(processId) == g_originalAffinities.end()) {
                 g_originalAffinities[processId] = processAffinity;
-                LogMessage(L"Stored original affinity for " + originalName);
             }
         }
         
@@ -199,7 +210,8 @@ void ApplyAffinity(DWORD processId, std::wstring processName) { // Take by value
     CloseHandle(hProcess);
 }
 
-void SetAffinityForExistingProcesses() {
+void ReapplyAllAffinities(bool isGameActive) {
+    LogMessage(L"Game state changed. Re-applying affinities for all managed processes...");
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnapshot == INVALID_HANDLE_VALUE) return;
 
@@ -208,26 +220,27 @@ void SetAffinityForExistingProcesses() {
 
     if (Process32FirstW(hSnapshot, &pe)) {
         do {
-            ApplyAffinity(pe.th32ProcessID, pe.szExeFile);
-            
-            std::wstring processNameLower = pe.szExeFile;
-            ToLower(processNameLower);
-            if (g_gameList.count(processNameLower)) {
-                std::lock_guard<std::mutex> lock(g_pidMutex);
-                g_managedGamePIDs.insert(pe.th32ProcessID);
-            }
+            ApplyAffinity(pe.th32ProcessID, pe.szExeFile, isGameActive);
         } while (Process32NextW(hSnapshot, &pe));
     }
     CloseHandle(hSnapshot);
 }
 
+
+void SetAffinityForExistingProcesses() {
+    ReapplyAllAffinities(false); // On startup, no game is running
+}
+
 // --- Frequency Management ---
 void SetMaxFrequency(DWORD freqMhz) {
     GUID* activePolicyGuid;
-    if (PowerGetActiveScheme(NULL, &activePolicyGuid) != ERROR_SUCCESS) return;
+    if (PowerGetActiveScheme(NULL, &activePolicyGuid) != ERROR_SUCCESS) {
+        LogMessage(L"Failed to get active power scheme.");
+        return;
+    }
 
-    if (freqMhz > 0) {
-        if (!g_freqChanged) {
+    if (freqMhz > 0) { // Set to a specific frequency
+        if (!g_freqChanged) { // Only save original values once
             PowerReadACValueIndex(NULL, activePolicyGuid, &GUID_PROCESSOR_SETTINGS_SUBGROUP, &GUID_PROCESSOR_FREQUENCY_MAXIMUM, &g_originalMaxFreqAC);
             PowerReadDCValueIndex(NULL, activePolicyGuid, &GUID_PROCESSOR_SETTINGS_SUBGROUP, &GUID_PROCESSOR_FREQUENCY_MAXIMUM, &g_originalMaxFreqDC);
             g_freqChanged = true;
@@ -235,7 +248,8 @@ void SetMaxFrequency(DWORD freqMhz) {
         LogMessage(L"Setting max frequency to " + std::to_wstring(freqMhz) + L" MHz.");
         PowerWriteACValueIndex(NULL, activePolicyGuid, &GUID_PROCESSOR_SETTINGS_SUBGROUP, &GUID_PROCESSOR_FREQUENCY_MAXIMUM, freqMhz);
         PowerWriteDCValueIndex(NULL, activePolicyGuid, &GUID_PROCESSOR_SETTINGS_SUBGROUP, &GUID_PROCESSOR_FREQUENCY_MAXIMUM, freqMhz);
-    } else {
+
+    } else { // Restore original frequency
         if (g_freqChanged) {
             LogMessage(L"Restoring original max frequency.");
             PowerWriteACValueIndex(NULL, activePolicyGuid, &GUID_PROCESSOR_SETTINGS_SUBGROUP, &GUID_PROCESSOR_FREQUENCY_MAXIMUM, g_originalMaxFreqAC);
@@ -244,6 +258,7 @@ void SetMaxFrequency(DWORD freqMhz) {
         }
     }
     
+    // Apply the changes immediately
     PowerSetActiveScheme(NULL, activePolicyGuid);
     LocalFree(activePolicyGuid);
 }
@@ -316,22 +331,24 @@ public:
                     ToLower(processNameLower);
 
                     if (className == L"__InstanceCreationEvent") {
-                        LogMessage(L"Process Created: " + processName + L" (ID: " + std::to_wstring(processId) + L")");
-                        ApplyAffinity(processId, processName);
+                        ApplyAffinity(processId, processName, g_activeGameCount > 0);
 
                         if (g_gameList.count(processNameLower)) {
-                            if (g_activeGameCount == 0) SetMaxFrequency(100);
+                            if (g_activeGameCount == 0) {
+                                SetMaxFrequency(100);
+                                ReapplyAllAffinities(true);
+                            }
                             g_activeGameCount++;
                             std::lock_guard<std::mutex> lock(g_pidMutex);
                             g_managedGamePIDs.insert(processId);
                         }
                     } else if (className == L"__InstanceDeletionEvent") {
-                        LogMessage(L"Process Terminated: " + processName + L" (ID: " + std::to_wstring(processId) + L")");
                         if (g_gameList.count(processNameLower)) {
                             g_activeGameCount--;
                             if (g_activeGameCount <= 0) {
                                 g_activeGameCount = 0;
                                 SetMaxFrequency(0);
+                                ReapplyAllAffinities(false);
                             }
                         }
                         std::lock_guard<std::mutex> lock(g_pidMutex);
@@ -463,14 +480,7 @@ void WINAPI ServiceCtrlHandler(DWORD CtrlCode) {
 }
 
 DWORD WINAPI ServiceWorkerThread(LPVOID lpParam) {
-    LogMessage(L"--- Service Starting ---");
-    
-    if (!EnableDebugPrivilege()) {
-        LogMessage(L"Could not enable SeDebugPrivilege. The service may not be able to manage all processes.");
-    } else {
-        LogMessage(L"SeDebugPrivilege enabled successfully.");
-    }
-    
+    EnableDebugPrivilege();
     DetectCoreMasks();
     if(g_eCoreMask > 0) SetProcessAffinityMask(GetCurrentProcess(), g_eCoreMask);
     LoadProcessLists();
@@ -494,7 +504,6 @@ DWORD WINAPI ServiceWorkerThread(LPVOID lpParam) {
 }
 
 DWORD WINAPI AffinityWatcherThread(LPVOID lpParam) {
-    LogMessage(L"Affinity watcher thread started.");
     while (WaitForSingleObject(g_ServiceStopEvent, 5000) == WAIT_TIMEOUT) {
         std::lock_guard<std::mutex> lock(g_pidMutex);
         if (g_managedGamePIDs.empty()) continue;
@@ -507,7 +516,6 @@ DWORD WINAPI AffinityWatcherThread(LPVOID lpParam) {
                 DWORD_PTR processAffinity, systemAffinity;
                 if (GetProcessAffinityMask(hProcess, &processAffinity, &systemAffinity)) {
                     if (processAffinity != g_pCoreMask) {
-                        LogMessage(L"Affinity for PID " + std::to_wstring(pid) + L" has changed. Re-applying P-Core mask.");
                         SetProcessAffinityMask(hProcess, g_pCoreMask);
                     }
                 }
@@ -518,6 +526,5 @@ DWORD WINAPI AffinityWatcherThread(LPVOID lpParam) {
             }
         }
     }
-    LogMessage(L"Affinity watcher thread stopped.");
     return 0;
 }
