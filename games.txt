@@ -261,3 +261,4 @@ worldwarz.exe
 xenobladechronicles.exe
 yooka_laylee.exe
 zomboid.exe
+javaw.exe

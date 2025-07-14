@@ -246,3 +246,15 @@ wsmprovhost.exe
 wsqmcons.exe
 wuapihost.exe
 xwizard.exe
+agent_ovpnconnect.exe
+AsusPTPService.exe
+DAX3API.exe
+helperservice.exe
+ipfsvc.exe
+ipf_helper.exe
+ipf_uf.exe
+ipf_service.exe
+ovpnhelper_service.exe
+ss_conn_service.exe
+ss_conn_service2.exe
+WMIRegistrationService.exe
